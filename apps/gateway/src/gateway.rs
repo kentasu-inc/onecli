@@ -403,10 +403,12 @@ async fn fallback() -> StatusCode {
     StatusCode::BAD_REQUEST
 }
 
-/// An HTTP proxy request has an absolute URI with `http://` scheme
-/// (RFC 7230 §5.3.2). Direct requests use origin-form (`/path`).
+/// An HTTP proxy request has an absolute URI with `http://` or `https://`
+/// scheme (RFC 7230 §5.3.2). Direct requests use origin-form (`/path`).
+/// Also matches `https://` because some clients (axios v1.x) send absolute-form
+/// HTTPS URIs to the proxy port instead of using CONNECT.
 fn is_http_proxy_request<T>(req: &Request<T>) -> bool {
-    req.uri().scheme_str() == Some("http")
+    matches!(req.uri().scheme_str(), Some("http" | "https"))
 }
 
 // ── Connection handling ─────────────────────────────────────────────────
@@ -589,10 +591,11 @@ async fn handle_connect(
 
 // ── HTTP proxy handling ─────────────────────────────────────────────────
 
-/// Handle a plain HTTP proxy request (absolute URI like `GET http://host/path`).
+/// Handle a plain HTTP proxy request (absolute URI like `GET http(s)://host/path`).
 ///
-/// Unlike CONNECT, there is no tunnel upgrade or TLS — the gateway reads the
-/// request directly, applies credential injection, and forwards upstream over HTTP.
+/// Unlike CONNECT, there is no tunnel upgrade — the gateway reads the request
+/// directly, applies credential injection, and forwards upstream over the
+/// original scheme (reqwest handles TLS transparently for `https://`).
 async fn handle_http_proxy(
     req: Request<Incoming>,
     peer_addr: SocketAddr,
@@ -603,6 +606,11 @@ async fn handle_http_proxy(
         .authority()
         .context("HTTP proxy request missing authority")?
         .to_string();
+    // Static-map to avoid borrowing from `req`, which is moved below.
+    let scheme: &'static str = match req.uri().scheme_str() {
+        Some("https") => "https",
+        _ => "http",
+    };
     let hostname = strip_port(&authority).to_string();
 
     let agent_token = inject::extract_agent_token(&req).filter(|t| !t.is_empty());
@@ -673,6 +681,7 @@ async fn handle_http_proxy(
     info!(
         peer = %peer_addr,
         host = %authority,
+        scheme = %scheme,
         injection_count = resolved.injection_rules.len(),
         policy_count = resolved.policy_rules.len(),
         "HTTP_PROXY"
@@ -697,11 +706,18 @@ async fn handle_http_proxy(
         rewrite_host: None,
     };
 
+    let http_client =
+        if scheme == "https" && host_matches_skip_verify(&hostname, &state.skip_verify_hosts) {
+            state.http_client_no_verify.clone()
+        } else {
+            state.http_client.clone()
+        };
+
     let mut resp = forward::forward_request(
         req,
         &authority,
-        "http",
-        state.http_client.clone(),
+        scheme,
+        http_client,
         &rules,
         &*state.cache,
         &proxy_ctx,
@@ -887,10 +903,21 @@ mod tests {
     }
 
     #[test]
-    fn http_proxy_not_detected_for_https_uri() {
-        // HTTPS absolute URIs shouldn't match — those use CONNECT
+    fn http_proxy_detected_for_https_absolute_uri() {
+        // axios v1.x with HTTPS_PROXY sends absolute-form https:// instead of CONNECT
         let req = Request::builder()
             .uri("https://api.example.com/data")
+            .body(())
+            .unwrap();
+        assert!(is_http_proxy_request(&req));
+    }
+
+    #[test]
+    fn http_proxy_not_detected_for_other_schemes() {
+        // Non-http(s) schemes (ws://, ftp://, etc.) shouldn't be treated
+        // as HTTP proxy requests.
+        let req = Request::builder()
+            .uri("ws://api.example.com/data")
             .body(())
             .unwrap();
         assert!(!is_http_proxy_request(&req));
