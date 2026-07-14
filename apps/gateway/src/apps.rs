@@ -1634,7 +1634,7 @@ struct GoogleSaSecretClaims<'a> {
 ///
 /// Differs from `refresh_via_service_account`:
 /// - No `sub` claim (avoids DWD / `invalid_grant` issues)
-/// - Uses `drive.readonly` scope (not `cloud-platform`)
+/// - Uses `drive` scope (not `cloud-platform`)
 pub(crate) async fn refresh_google_sa_secret_token(
     private_key_pem: &str,
     client_email: &str,
@@ -1647,7 +1647,7 @@ pub(crate) async fn refresh_google_sa_secret_token(
     let claims = GoogleSaSecretClaims {
         iss: client_email,
         aud: "https://oauth2.googleapis.com/token",
-        scope: "https://www.googleapis.com/auth/drive.readonly",
+        scope: "https://www.googleapis.com/auth/drive",
         iat: now,
         exp: now + 3600,
     };

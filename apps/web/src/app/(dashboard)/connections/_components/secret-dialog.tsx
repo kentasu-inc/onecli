@@ -921,7 +921,8 @@ export const SecretDialog = ({
                       </div>
                     )}
                     <p className="text-muted-foreground text-xs">
-                      MVP: Drive read-only access (drive.readonly). Broader
+                      MVP: Full Drive read-write access, including files
+                      shared with this service account (drive). Broader
                       scopes coming soon.
                     </p>
                   </>
