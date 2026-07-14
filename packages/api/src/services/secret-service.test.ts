@@ -25,6 +25,7 @@ vi.mock("../providers", () => ({
 }));
 
 import { createSecret, updateSecret } from "./secret-service";
+import { GOOGLE_SA_DEFAULT_SCOPE } from "../validations/secret";
 import type { ResourceScope } from "./resource-scope";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper
@@ -69,7 +70,51 @@ describe("createSecret — google_service_account", () => {
     expect(data.metadata).toEqual({
       clientEmail: "test@my-project.iam.gserviceaccount.com",
       projectId: "my-project",
+      scope: GOOGLE_SA_DEFAULT_SCOPE,
     });
+  });
+
+  it("defaults scope to the Drive scope when omitted", async () => {
+    await createSecret(projectScope, {
+      name: "Google SA",
+      type: "google_service_account",
+      hostPattern: "www.googleapis.com",
+      value: validSaJson,
+    });
+
+    const data = callData(mockCreate);
+    expect(data.metadata.scope).toBe(GOOGLE_SA_DEFAULT_SCOPE);
+  });
+
+  it("persists an explicit scope into metadata", async () => {
+    await createSecret(projectScope, {
+      name: "Google SA",
+      type: "google_service_account",
+      hostPattern: "www.googleapis.com",
+      value: validSaJson,
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+    });
+
+    const data = callData(mockCreate);
+    expect(data.metadata.scope).toBe(
+      "https://www.googleapis.com/auth/spreadsheets",
+    );
+  });
+
+  it("persists scope for a 1Password-sourced SA secret", async () => {
+    await createSecret(projectScope, {
+      name: "Google SA",
+      type: "google_service_account",
+      hostPattern: "www.googleapis.com",
+      valueSource: "onepassword",
+      opRef: "op://vault/item/field",
+      scope: "https://www.googleapis.com/auth/calendar",
+    });
+
+    const data = callData(mockCreate);
+    expect(data.metadata.scope).toBe(
+      "https://www.googleapis.com/auth/calendar",
+    );
   });
 
   it("metadata excludes private_key", async () => {
@@ -166,6 +211,7 @@ describe("createSecret — google_service_account", () => {
     const data = callData(mockCreate);
     expect(data.metadata).toEqual({
       clientEmail: "test@no-project.iam.gserviceaccount.com",
+      scope: GOOGLE_SA_DEFAULT_SCOPE,
     });
     expect(data.metadata).not.toHaveProperty("projectId");
   });
@@ -252,7 +298,63 @@ describe("updateSecret — google_service_account", () => {
     expect(data.metadata).toEqual({
       clientEmail: "test@my-project.iam.gserviceaccount.com",
       projectId: "my-project",
+      scope: GOOGLE_SA_DEFAULT_SCOPE,
     });
+  });
+
+  it("persists an explicit scope alongside a value update", async () => {
+    await updateSecret(projectScope, "sec-1", {
+      value: validSaJson,
+      valueSource: "inline",
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+    });
+
+    const data = callData(mockUpdate);
+    expect(data.metadata.scope).toBe(
+      "https://www.googleapis.com/auth/spreadsheets",
+    );
+  });
+
+  it("preserves the existing scope on a value-only update", async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: "sec-1",
+      type: "google_service_account",
+      metadata: { scope: "https://www.googleapis.com/auth/calendar" },
+    });
+
+    await updateSecret(projectScope, "sec-1", {
+      value: validSaJson,
+      valueSource: "inline",
+    });
+
+    const data = callData(mockUpdate);
+    expect(data.metadata.scope).toBe(
+      "https://www.googleapis.com/auth/calendar",
+    );
+  });
+
+  it("updates scope alone, preserving clientEmail/projectId", async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: "sec-1",
+      type: "google_service_account",
+      metadata: {
+        clientEmail: "test@my-project.iam.gserviceaccount.com",
+        projectId: "my-project",
+        scope: GOOGLE_SA_DEFAULT_SCOPE,
+      },
+    });
+
+    await updateSecret(projectScope, "sec-1", {
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+    });
+
+    const data = callData(mockUpdate);
+    expect(data.metadata).toEqual({
+      clientEmail: "test@my-project.iam.gserviceaccount.com",
+      projectId: "my-project",
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+    });
+    expect(data.encryptedValue).toBeUndefined();
   });
 
   it("does not override hostPattern on value-only update", async () => {

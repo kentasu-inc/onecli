@@ -310,6 +310,30 @@ describe("google_service_account schema validation", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("accepts an explicit scope", () => {
+    const result = createSecretSchema.safeParse(
+      saSecretInput({
+        scope:
+          "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly",
+      }),
+    );
+    expect(result.success).toBe(true);
+  });
+
+  it("omits scope when not provided (service defaults it)", () => {
+    const result = createSecretSchema.safeParse(saSecretInput());
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.scope).toBeUndefined();
+    }
+  });
+
+  it("rejects an empty scope", () => {
+    expect(
+      createSecretSchema.safeParse(saSecretInput({ scope: "   " })).success,
+    ).toBe(false);
+  });
 });
 
 describe("GOOGLE_SA_DEFAULT_HOST", () => {
@@ -366,5 +390,13 @@ describe("parseGoogleServiceAccountMetadata", () => {
 
   it("returns null for null", () => {
     expect(parseGoogleServiceAccountMetadata(null)).toBeNull();
+  });
+
+  it("parses an optional scope", () => {
+    const result = parseGoogleServiceAccountMetadata({
+      clientEmail: "test@example.iam.gserviceaccount.com",
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+    });
+    expect(result?.scope).toBe("https://www.googleapis.com/auth/spreadsheets");
   });
 });

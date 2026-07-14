@@ -209,6 +209,10 @@ export const createSecretSchema = z
     hostPattern: hostPatternSchema.optional(),
     pathPattern: z.string().max(1000).optional(),
     injectionConfig: injectionConfigSchema,
+    // OAuth scope(s) for google_service_account secrets, stored in
+    // metadata.scope. A space-separated list is allowed (Google's JWT `scope`
+    // claim supports multiple scopes). Defaults to GOOGLE_SA_DEFAULT_SCOPE.
+    scope: z.string().max(2000).optional(),
   })
   .superRefine((data, ctx) => {
     // hostPattern is required for all types except google_service_account,
@@ -251,6 +255,20 @@ export const createSecretSchema = z
         });
       }
     }
+
+    // A provided scope must be non-empty (Google rejects an empty `scope`
+    // claim). Omitting scope is fine — the service defaults it.
+    if (
+      data.type === "google_service_account" &&
+      data.scope !== undefined &&
+      data.scope.trim().length === 0
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["scope"],
+        message: "Scope must not be empty",
+      });
+    }
   })
   .transform((data) => ({
     ...data,
@@ -269,6 +287,8 @@ export const updateSecretSchema = z
     hostPattern: hostPatternSchema.optional(),
     pathPattern: z.string().max(1000).nullable().optional(),
     injectionConfig: injectionConfigSchema,
+    // OAuth scope(s) for google_service_account secrets (see createSecretSchema).
+    scope: z.string().max(2000).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "At least one field must be provided",
@@ -279,6 +299,13 @@ export const updateSecretSchema = z
         code: "custom",
         path: ["opRef"],
         message: "Select a 1Password field",
+      });
+    }
+    if (data.scope !== undefined && data.scope.trim().length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["scope"],
+        message: "Scope must not be empty",
       });
     }
     if (
@@ -431,6 +458,11 @@ export const detectOpenaiAuthMode = (value: string): OpenaiAuthMode =>
 
 export const GOOGLE_SA_DEFAULT_HOST = "www.googleapis.com";
 
+// Default OAuth scope for Google Service Account secrets, used when a secret
+// has no explicit metadata.scope. Kept in sync with the gateway's
+// GOOGLE_SA_DEFAULT_SCOPE (apps/gateway/src/apps.rs).
+export const GOOGLE_SA_DEFAULT_SCOPE = "https://www.googleapis.com/auth/drive";
+
 export interface GoogleServiceAccountJson {
   type: string;
   private_key: string;
@@ -461,6 +493,7 @@ export const parseGoogleServiceAccountJson = (
 export interface GoogleServiceAccountMetadata {
   projectId?: string;
   clientEmail: string;
+  scope?: string;
 }
 
 export const parseGoogleServiceAccountMetadata = (
