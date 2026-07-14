@@ -15,6 +15,7 @@ import {
   parseGoogleServiceAccountJson,
   parseOpenaiAuthJson,
   parseOpenaiOAuthJson,
+  GOOGLE_SA_DEFAULT_SCOPE,
   type CreateSecretInput,
   type UpdateSecretInput,
 } from "../validations/secret";
@@ -108,6 +109,7 @@ const assertPathValueSafe = (
 const buildMetadata = (
   type: string,
   value: string,
+  scope?: string,
 ): Prisma.InputJsonValue | typeof Prisma.JsonNull => {
   if (type === "anthropic") {
     return {
@@ -128,6 +130,9 @@ const buildMetadata = (
       return {
         clientEmail: sa.client_email,
         ...(sa.project_id ? { projectId: sa.project_id } : {}),
+        // Persist the OAuth scope so the gateway includes it in the JWT `scope`
+        // claim; default to the Drive scope when the caller omits it.
+        scope: scope?.trim() || GOOGLE_SA_DEFAULT_SCOPE,
       } as Prisma.InputJsonValue;
     }
   }
@@ -137,10 +142,15 @@ const buildMetadata = (
 const buildOnePasswordMetadata = (
   type: string,
   opDisplay: CreateSecretInput["opDisplay"],
+  scope?: string,
 ): Prisma.InputJsonValue | typeof Prisma.JsonNull => {
   const meta: Record<string, unknown> = {};
   // LLM keys resolved from 1Password are always API-key mode (no value to inspect, no OAuth).
   if (type === "anthropic" || type === "openai") meta.authMode = "api-key";
+  // The SA JSON is resolved from 1Password at request time, but the OAuth scope
+  // is still configured per-secret, so persist it in metadata.scope.
+  if (type === "google_service_account")
+    meta.scope = scope?.trim() || GOOGLE_SA_DEFAULT_SCOPE;
   if (opDisplay) meta.opDisplay = opDisplay;
   return Object.keys(meta).length > 0
     ? (meta as Prisma.InputJsonValue)
@@ -244,7 +254,11 @@ export const createSecret = async (
         hostPattern,
         pathPattern,
         injectionConfig,
-        metadata: buildOnePasswordMetadata(input.type, input.opDisplay),
+        metadata: buildOnePasswordMetadata(
+          input.type,
+          input.opDisplay,
+          input.scope,
+        ),
         ...scopeCreate(scope),
       },
       select: {
@@ -283,7 +297,7 @@ export const createSecret = async (
       hostPattern,
       pathPattern,
       injectionConfig,
-      metadata: buildMetadata(input.type, value),
+      metadata: buildMetadata(input.type, value, input.scope),
       ...scopeCreate(scope),
     },
     select: {
@@ -319,12 +333,26 @@ export const updateSecret = async (
 ) => {
   const secret = await db.secret.findFirst({
     where: scopeOwnership(scope, secretId),
-    select: { id: true, type: true },
+    select: { id: true, type: true, metadata: true },
   });
 
   if (!secret) throw new ServiceError("NOT_FOUND", "Secret not found");
 
   const data: Record<string, unknown> = {};
+
+  // Existing SA scope, used to preserve the configured scope across value/1Password
+  // updates that don't restate it. Read directly from metadata (not via
+  // parseGoogleServiceAccountMetadata, which requires clientEmail — absent on
+  // 1Password-sourced SA secrets).
+  const existingMetadata =
+    secret.metadata && typeof secret.metadata === "object"
+      ? (secret.metadata as Record<string, unknown>)
+      : undefined;
+  const existingScope =
+    secret.type === "google_service_account" &&
+    typeof existingMetadata?.scope === "string"
+      ? existingMetadata.scope
+      : undefined;
 
   if (input.name !== undefined) {
     const name = input.name.trim();
@@ -351,7 +379,11 @@ export const updateSecret = async (
     if (secret.type === "openai") data.hostPattern = "api.openai.com";
     // SA: preserve existing hostPattern — users may have set a custom host
     // (e.g. storage.googleapis.com). anthropic/openai have fixed hosts.
-    data.metadata = buildOnePasswordMetadata(secret.type, input.opDisplay);
+    data.metadata = buildOnePasswordMetadata(
+      secret.type,
+      input.opDisplay,
+      input.scope ?? existingScope,
+    );
   } else if (input.value !== undefined) {
     let value = input.value.trim();
     if (!value)
@@ -376,7 +408,11 @@ export const updateSecret = async (
       secret.type === "openai" ||
       secret.type === "google_service_account"
     ) {
-      data.metadata = buildMetadata(secret.type, value);
+      data.metadata = buildMetadata(
+        secret.type,
+        value,
+        input.scope ?? existingScope,
+      );
     }
   }
 
@@ -394,6 +430,20 @@ export const updateSecret = async (
   if (input.injectionConfig !== undefined && secret.type === "generic") {
     data.injectionConfig = buildInjectionConfig(input.injectionConfig);
     assertPathValueSafe(input.injectionConfig, input.valueSource, input.value);
+  }
+
+  // Scope-only update (no new value / 1Password change re-derived the metadata
+  // above): merge the new scope into the existing SA metadata, preserving
+  // clientEmail/projectId.
+  if (
+    input.scope !== undefined &&
+    secret.type === "google_service_account" &&
+    data.metadata === undefined
+  ) {
+    data.metadata = {
+      ...(existingMetadata ?? {}),
+      scope: input.scope.trim() || GOOGLE_SA_DEFAULT_SCOPE,
+    } as Prisma.InputJsonValue;
   }
 
   if (Object.keys(data).length === 0) {

@@ -47,6 +47,7 @@ import { validateDisplayName } from "@onecli/api/validations/display-name";
 import {
   type InjectionConfig,
   GOOGLE_SA_DEFAULT_HOST,
+  GOOGLE_SA_DEFAULT_SCOPE,
   detectAnthropicAuthMode,
   isHeaderInjection,
   isParamInjection,
@@ -254,6 +255,8 @@ export const SecretDialog = ({
   const [nameTouched, setNameTouched] = useState(false);
   const [value, setValue] = useState("");
   const [hostPattern, setHostPattern] = useState("api.anthropic.com");
+  // OAuth scope for Google Service Account secrets; space-separated list allowed.
+  const [scope, setScope] = useState(GOOGLE_SA_DEFAULT_SCOPE);
   const [pathPattern, setPathPattern] = useState("");
   const [injectionTarget, setInjectionTarget] = useState<
     "header" | "param" | "path"
@@ -320,6 +323,7 @@ export const SecretDialog = ({
       setPathTemplate("");
       setPathRegex("");
       setPathReplacement("");
+      setScope(GOOGLE_SA_DEFAULT_SCOPE);
       if (secret) {
         const config = secret.injectionConfig as InjectionConfig | null;
         setStep("form");
@@ -335,6 +339,14 @@ export const SecretDialog = ({
         setName(secret.name);
         setValue("");
         setHostPattern(secret.hostPattern);
+        if (secret.type === "google_service_account") {
+          const savedScope = secret.metadata?.scope;
+          setScope(
+            typeof savedScope === "string" && savedScope.trim()
+              ? savedScope
+              : GOOGLE_SA_DEFAULT_SCOPE,
+          );
+        }
         setPathPattern(secret.pathPattern ?? "");
         if (isParamInjection(config)) {
           setInjectionTarget("param");
@@ -424,6 +436,7 @@ export const SecretDialog = ({
     if (selected === "google_service_account") {
       setOpSelection(null);
       setValue("");
+      setScope(GOOGLE_SA_DEFAULT_SCOPE);
     }
     setStep("form");
   };
@@ -444,6 +457,9 @@ export const SecretDialog = ({
 
   const saValueValid = !isGoogleSA || !value.trim() || !!parsedSA;
 
+  // Google rejects an empty `scope` claim, so require a non-empty scope for SA.
+  const scopeValid = !isGoogleSA || scope.trim().length > 0;
+
   const pathPreview = useMemo(
     () =>
       injectionTarget === "path"
@@ -456,13 +472,15 @@ export const SecretDialog = ({
     ? hostPattern.trim() &&
       !hostPatternError &&
       hasInjectionTarget &&
-      saValueValid
+      saValueValid &&
+      scopeValid
     : isNameValid &&
       ((!isGoogleSA && fromOnePassword) || !!value.trim()) &&
       hostPattern.trim() &&
       !hostPatternError &&
       hasInjectionTarget &&
-      saValueValid;
+      saValueValid &&
+      scopeValid;
 
   const handleSave = async () => {
     if (!isValid) return;
@@ -501,6 +519,7 @@ export const SecretDialog = ({
           hostPattern,
           pathPattern: pathPattern || null,
           injectionConfig: buildInjectionConfig() ?? undefined,
+          ...(isGoogleSA ? { scope: scope.trim() } : {}),
         });
         toast.success("Secret updated");
       } else {
@@ -515,6 +534,7 @@ export const SecretDialog = ({
                 hostPattern,
                 pathPattern: pathPattern || undefined,
                 injectionConfig: buildInjectionConfig() ?? null,
+                ...(isGoogleSA ? { scope: scope.trim() } : {}),
               }
             : {
                 name,
@@ -523,6 +543,7 @@ export const SecretDialog = ({
                 hostPattern,
                 pathPattern: pathPattern || undefined,
                 injectionConfig: buildInjectionConfig() ?? null,
+                ...(isGoogleSA ? { scope: scope.trim() } : {}),
               },
         );
         toast.success("Secret created");
@@ -920,11 +941,33 @@ export const SecretDialog = ({
                         </div>
                       </div>
                     )}
-                    <p className="text-muted-foreground text-xs">
-                      MVP: Full Drive read-write access, including files
-                      shared with this service account (drive). Broader
-                      scopes coming soon.
-                    </p>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="sa-scope">OAuth scope</Label>
+                      <Input
+                        id="sa-scope"
+                        value={scope}
+                        onChange={(e) => setScope(e.target.value)}
+                        placeholder={GOOGLE_SA_DEFAULT_SCOPE}
+                        className={cn(
+                          "font-mono text-xs",
+                          !scope.trim() && "border-destructive",
+                        )}
+                      />
+                      {!scope.trim() ? (
+                        <p className="text-xs text-red-500">
+                          Scope is required.
+                        </p>
+                      ) : (
+                        <p className="text-muted-foreground text-xs">
+                          Access token is minted for this scope. Separate
+                          multiple scopes with spaces (e.g.{" "}
+                          <code className="text-[11px]">
+                            .../auth/drive .../auth/spreadsheets
+                          </code>
+                          ).
+                        </p>
+                      )}
+                    </div>
                   </>
                 ) : isOAuthMode ? (
                   <>

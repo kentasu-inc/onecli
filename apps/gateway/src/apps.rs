@@ -1625,19 +1625,26 @@ pub(crate) async fn refresh_via_service_account(
 struct GoogleSaSecretClaims<'a> {
     iss: &'a str,
     aud: &'static str,
-    scope: &'static str,
+    scope: &'a str,
     iat: i64,
     exp: i64,
 }
+
+/// Default OAuth scope for Google SA secrets that have no explicit
+/// `metadata.scope` (covers secrets created before scope became editable).
+/// Kept in sync with the API's `GOOGLE_SA_DEFAULT_SCOPE`.
+pub(crate) const GOOGLE_SA_DEFAULT_SCOPE: &str = "https://www.googleapis.com/auth/drive";
 
 /// Refresh an access token for a Google SA *secret* (not app-connection).
 ///
 /// Differs from `refresh_via_service_account`:
 /// - No `sub` claim (avoids DWD / `invalid_grant` issues)
-/// - Uses `drive` scope (not `cloud-platform`)
+/// - Uses the caller-supplied `scope` (from `metadata.scope`, defaulting to the
+///   Drive scope), not `cloud-platform`. A space-separated list is supported.
 pub(crate) async fn refresh_google_sa_secret_token(
     private_key_pem: &str,
     client_email: &str,
+    scope: String,
 ) -> anyhow::Result<(String, i64)> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1647,7 +1654,7 @@ pub(crate) async fn refresh_google_sa_secret_token(
     let claims = GoogleSaSecretClaims {
         iss: client_email,
         aud: "https://oauth2.googleapis.com/token",
-        scope: "https://www.googleapis.com/auth/drive",
+        scope: &scope,
         iat: now,
         exp: now + 3600,
     };

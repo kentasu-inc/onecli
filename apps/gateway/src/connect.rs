@@ -339,11 +339,24 @@ impl PolicyEngine {
                     None => value,
                 }
             } else if is_google_sa {
+                // Scope is configured per-secret in metadata.scope; secrets
+                // created before it was editable have none, so fall back to the
+                // default Drive scope.
+                let scope = secret
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("scope"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(apps::GOOGLE_SA_DEFAULT_SCOPE)
+                    .to_string();
+
                 // Resolve SA JSON → access token via JWT exchange + cache.
                 match secret_inject::resolve_google_sa_token(
                     self.cache.as_ref(),
                     &value,
                     &secret.id,
+                    scope,
                 )
                 .await
                 {
